@@ -313,6 +313,9 @@ export class WorkerService {
       }).catch(error => {
         logger.error('SYSTEM', 'Auto-recovery of pending queues failed', {}, error as Error);
       });
+
+      // Start stale session cleanup worker (every 15 minutes)
+      this.startStaleSessionCleanupWorker();
     } catch (error) {
       logger.error('SYSTEM', 'Background initialization failed', {}, error as Error);
       throw error;
@@ -396,6 +399,60 @@ export class WorkerService {
     }
 
     return result;
+  }
+
+  /**
+   * Start background worker for cleaning up stale sessions
+   * Runs every 15 minutes to mark old active sessions as completed
+   */
+  private startStaleSessionCleanupWorker(): void {
+    const CLEANUP_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
+    const STALE_THRESHOLD_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+    setInterval(async () => {
+      try {
+        const db = this.dbManager.getSessionStore().db;
+        const now = Date.now();
+        const staleThreshold = now - STALE_THRESHOLD_MS;
+
+        // Find active sessions older than 24 hours
+        const staleSessions = db.query(`
+          SELECT id, content_session_id
+          FROM sdk_sessions
+          WHERE status = 'active'
+            AND started_at_epoch < ?
+        `).all(staleThreshold) as Array<{ id: number; content_session_id: string }>;
+
+        if (staleSessions.length === 0) return;
+
+        const sessionIds = staleSessions.map(s => s.id);
+
+        // Mark pending messages from stale sessions as failed
+        const failedResult = db.run(`
+          UPDATE pending_messages
+          SET status = 'failed', failed_at_epoch = ?
+          WHERE session_db_id IN (${sessionIds.join(',')})
+            AND status = 'pending'
+        `, [now]);
+
+        // Mark stale sessions as completed
+        const completedResult = db.run(`
+          UPDATE sdk_sessions
+          SET status = 'completed', completed_at_epoch = ?
+          WHERE id IN (${sessionIds.join(',')})
+        `, [now]);
+
+        logger.info('SYSTEM', 'Stale session cleanup completed', {
+          staleSessions: staleSessions.length,
+          failedMessages: failedResult.changes,
+          completedSessions: completedResult.changes
+        });
+      } catch (error) {
+        logger.error('SYSTEM', 'Stale session cleanup failed', {}, error as Error);
+      }
+    }, CLEANUP_INTERVAL_MS);
+
+    logger.info('SYSTEM', 'Stale session cleanup worker started (15m interval)');
   }
 
   /**
