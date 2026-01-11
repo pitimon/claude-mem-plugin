@@ -4,6 +4,7 @@
  */
 
 import type { Database } from 'bun:sqlite';
+import { randomUUID } from 'crypto';
 import { logger } from '../../../utils/logger.js';
 
 /**
@@ -30,15 +31,19 @@ export function createSDKSession(
   const now = new Date();
   const nowEpoch = now.getTime();
 
-  // Pure INSERT OR IGNORE - no updates, no complexity
-  // NOTE: memory_session_id starts as NULL. It is captured by SDKAgent from the first SDK
-  // response and stored via updateMemorySessionId(). CRITICAL: memory_session_id must NEVER
-  // equal contentSessionId - that would inject memory messages into the user's transcript!
+  // Generate memory_session_id upfront to prevent NULL sessions
+  // FIX: Previously memory_session_id started as NULL and was captured by SDKAgent from SDK response.
+  // This caused issues when SDKAgent failed to capture it - sessions got stuck with NULL memory_session_id
+  // and observations couldn't be stored. Now we generate it at creation time.
+  // CRITICAL: memory_session_id must NEVER equal contentSessionId - that would inject memory messages
+  // into the user's transcript!
+  const memorySessionId = randomUUID();
+
   db.prepare(`
     INSERT OR IGNORE INTO sdk_sessions
     (content_session_id, memory_session_id, project, user_prompt, started_at, started_at_epoch, status)
-    VALUES (?, NULL, ?, ?, ?, ?, 'active')
-  `).run(contentSessionId, project, userPrompt, now.toISOString(), nowEpoch);
+    VALUES (?, ?, ?, ?, ?, ?, 'active')
+  `).run(contentSessionId, memorySessionId, project, userPrompt, now.toISOString(), nowEpoch);
 
   // Return existing or new ID
   const row = db.prepare('SELECT id FROM sdk_sessions WHERE content_session_id = ?')
