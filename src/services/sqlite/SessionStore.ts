@@ -47,6 +47,7 @@ export class SessionStore {
     this.renameSessionIdColumns();
     this.repairSessionIdColumnRename();
     this.addFailedAtEpochColumn();
+    this.createRawToolEventsTable();
   }
 
   /**
@@ -643,6 +644,91 @@ export class SessionStore {
     }
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(20, new Date().toISOString());
+  }
+
+  /**
+   * Create raw_tool_events table for Option C: Raw First, Summarize Later (migration 21)
+   *
+   * This table stores raw tool data immediately without waiting for LLM summarization.
+   * Benefits:
+   * - No data loss when LLM fails
+   * - Hook execution is instant (<5ms)
+   * - Background worker summarizes with retry logic
+   * - Raw data deleted after successful summarization
+   */
+  private createRawToolEventsTable(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(21) as SchemaVersion | undefined;
+    if (applied) return;
+
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS raw_tool_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_db_id INTEGER NOT NULL,
+        content_session_id TEXT NOT NULL,
+        tool_name TEXT NOT NULL,
+        tool_input TEXT,
+        tool_response TEXT,
+        cwd TEXT,
+        prompt_number INTEGER,
+        project TEXT,
+        status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'summarizing', 'completed', 'failed')),
+        retry_count INTEGER DEFAULT 0,
+        created_at_epoch INTEGER NOT NULL,
+        summarized_at_epoch INTEGER,
+        observation_id INTEGER,
+        error_message TEXT,
+        FOREIGN KEY (session_db_id) REFERENCES sdk_sessions(id) ON DELETE CASCADE
+      )
+    `);
+
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_raw_tool_events_session ON raw_tool_events(session_db_id)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_raw_tool_events_status ON raw_tool_events(status, created_at_epoch)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_raw_tool_events_project ON raw_tool_events(project)');
+
+    logger.info('DB', 'Created raw_tool_events table (migration 21)');
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(21, new Date().toISOString());
+
+    // Also migrate existing pending observation messages
+    this.migratePendingMessagesToRawEvents();
+  }
+
+  /**
+   * Migrate existing pending_messages to raw_tool_events (migration 22)
+   * One-time migration when Option C is enabled
+   */
+  private migratePendingMessagesToRawEvents(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(22) as SchemaVersion | undefined;
+    if (applied) return;
+
+    // Check if pending_messages table exists
+    const tableExists = this.db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='pending_messages'"
+    ).get();
+
+    if (!tableExists) {
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(22, new Date().toISOString());
+      return;
+    }
+
+    // Migrate pending/failed observation messages
+    const result = this.db.run(`
+      INSERT INTO raw_tool_events
+        (session_db_id, content_session_id, tool_name, tool_input, tool_response,
+         cwd, prompt_number, status, retry_count, created_at_epoch)
+      SELECT
+        session_db_id, content_session_id, tool_name, tool_input, tool_response,
+        cwd, prompt_number, 'pending', 0, created_at_epoch
+      FROM pending_messages
+      WHERE status IN ('pending', 'processing', 'failed')
+        AND message_type = 'observation'
+        AND tool_name IS NOT NULL
+    `);
+
+    if (result.changes > 0) {
+      logger.info('DB', `Migrated ${result.changes} pending messages to raw_tool_events (migration 22)`);
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(22, new Date().toISOString());
   }
 
   /**

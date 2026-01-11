@@ -13,7 +13,15 @@ import { DatabaseManager } from './DatabaseManager.js';
 import { logger } from '../../utils/logger.js';
 import type { ActiveSession, PendingMessage, PendingMessageWithId, ObservationData } from '../worker-types.js';
 import { PendingMessageStore } from '../sqlite/PendingMessageStore.js';
+import { RawToolEventStore } from '../sqlite/RawToolEventStore.js';
 import { SessionQueueProcessor } from '../queue/SessionQueueProcessor.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+
+// Feature flag for Option C: Raw First, Summarize Later
+// Cached at startup - requires restart to change
+const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH) as any;
+const USE_RAW_EVENTS = settings.CLAUDE_MEM_USE_RAW_EVENTS === 'true' || settings.CLAUDE_MEM_USE_RAW_EVENTS === true;
 
 export class SessionManager {
   private dbManager: DatabaseManager;
@@ -21,6 +29,7 @@ export class SessionManager {
   private sessionQueues: Map<number, EventEmitter> = new Map();
   private onSessionDeletedCallback?: () => void;
   private pendingStore: PendingMessageStore | null = null;
+  private rawStore: RawToolEventStore | null = null;
 
   constructor(dbManager: DatabaseManager) {
     this.dbManager = dbManager;
@@ -35,6 +44,18 @@ export class SessionManager {
       this.pendingStore = new PendingMessageStore(sessionStore.db, 3);
     }
     return this.pendingStore;
+  }
+
+  /**
+   * Get or create RawToolEventStore (lazy initialization)
+   * Used for Option C: Raw First, Summarize Later
+   */
+  getRawStore(): RawToolEventStore {
+    if (!this.rawStore) {
+      const sessionStore = this.dbManager.getSessionStore();
+      this.rawStore = new RawToolEventStore(sessionStore.db, 3);
+    }
+    return this.rawStore;
   }
 
   /**
@@ -179,6 +200,9 @@ export class SessionManager {
    *
    * CRITICAL: Persists to database FIRST before adding to in-memory queue.
    * This ensures observations survive worker crashes.
+   *
+   * Option C (USE_RAW_EVENTS=true): Stores raw data immediately without LLM dependency.
+   * Background worker summarizes later.
    */
   queueObservation(sessionDbId: number, data: ObservationData): void {
     // Auto-initialize from database if needed (handles worker restarts)
@@ -187,7 +211,33 @@ export class SessionManager {
       session = this.initializeSession(sessionDbId);
     }
 
-    // CRITICAL: Persist to database FIRST
+    // Option C: Raw First, Summarize Later
+    if (USE_RAW_EVENTS) {
+      try {
+        const eventId = this.getRawStore().insertRaw(sessionDbId, session.contentSessionId, {
+          tool_name: data.tool_name,
+          tool_input: data.tool_input,
+          tool_response: data.tool_response,
+          prompt_number: data.prompt_number,
+          cwd: data.cwd,
+          project: session.project
+        });
+        const pending = this.getRawStore().getPendingCount();
+        const toolSummary = logger.formatTool(data.tool_name, data.tool_input);
+        logger.info('RAW_EVENT', `CAPTURED | sessionDbId=${sessionDbId} | eventId=${eventId} | tool=${toolSummary} | pending=${pending}`, {
+          sessionId: sessionDbId
+        });
+        return; // Don't notify generator - background worker will handle summarization
+      } catch (error) {
+        logger.error('SESSION', 'Failed to persist raw event to DB', {
+          sessionId: sessionDbId,
+          tool: data.tool_name
+        }, error);
+        throw error;
+      }
+    }
+
+    // Legacy flow: Persist to pending_messages for immediate LLM processing
     const message: PendingMessage = {
       type: 'observation',
       tool_name: data.tool_name,

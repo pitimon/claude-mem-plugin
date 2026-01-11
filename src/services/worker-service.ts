@@ -65,6 +65,15 @@ import { SearchManager } from './worker/SearchManager.js';
 import { FormattingService } from './worker/FormattingService.js';
 import { TimelineService } from './worker/TimelineService.js';
 import { SessionEventBroadcaster } from './worker/events/SessionEventBroadcaster.js';
+import { RawEventSummarizer } from './worker/RawEventSummarizer.js';
+import { RawToolEventStore } from './sqlite/RawToolEventStore.js';
+import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../shared/paths.js';
+
+// Feature flag for Option C: Raw First, Summarize Later
+// Read from settings.json for reliability (env var was not passed to daemon correctly)
+const workerSettings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH) as any;
+const USE_RAW_EVENTS = workerSettings.CLAUDE_MEM_USE_RAW_EVENTS === 'true' || workerSettings.CLAUDE_MEM_USE_RAW_EVENTS === true;
 
 // HTTP route handlers
 import { ViewerRoutes } from './worker/http/routes/ViewerRoutes.js';
@@ -124,6 +133,9 @@ export class WorkerService {
 
   // Route handlers
   private searchRoutes: SearchRoutes | null = null;
+
+  // Option C: Raw Event Summarizer (background worker)
+  private rawEventSummarizer: RawEventSummarizer | null = null;
 
   // Initialization tracking
   private initializationComplete: Promise<void>;
@@ -316,6 +328,11 @@ export class WorkerService {
 
       // Start stale session cleanup worker (every 15 minutes)
       this.startStaleSessionCleanupWorker();
+
+      // Option C: Start raw event summarizer if enabled
+      if (USE_RAW_EVENTS) {
+        this.startRawEventSummarizer();
+      }
     } catch (error) {
       logger.error('SYSTEM', 'Background initialization failed', {}, error as Error);
       throw error;
@@ -453,6 +470,28 @@ export class WorkerService {
     }, CLEANUP_INTERVAL_MS);
 
     logger.info('SYSTEM', 'Stale session cleanup worker started (15m interval)');
+  }
+
+  /**
+   * Start the raw event summarizer background worker
+   * Part of Option C: Raw First, Summarize Later
+   */
+  private startRawEventSummarizer(): void {
+    const sessionStore = this.dbManager.getSessionStore();
+    const rawStore = new RawToolEventStore(sessionStore.db, 3);
+
+    this.rawEventSummarizer = new RawEventSummarizer(
+      this.dbManager,
+      rawStore,
+      {
+        intervalMs: 10000,   // Every 10 seconds
+        batchSize: 10,       // 10 events per batch
+        timeoutMs: 60000     // 60 second timeout per LLM call
+      }
+    );
+
+    this.rawEventSummarizer.start();
+    logger.info('SYSTEM', 'Raw event summarizer started (Option C enabled)');
   }
 
   /**
