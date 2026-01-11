@@ -115,9 +115,19 @@ export class SDKAgent {
 
     // Process SDK messages
     for await (const message of queryResult) {
-      // Capture memory session ID from first SDK message (any type has session_id)
-      // This enables resume for subsequent generator starts within the same user session
-      if (!session.memorySessionId && message.session_id) {
+      // Capture memory session ID from SDK message
+      // FIX: Previously only captured when !session.memorySessionId, but with pre-generated UUIDs
+      // this was never true. Now we capture when:
+      // 1. We don't have one yet (!session.memorySessionId), OR
+      // 2. SDK returns a DIFFERENT session_id (SDK overrides pre-generated UUID)
+      // This ensures Claude SDK provider works correctly - it uses its own session_id for resume.
+      const shouldCaptureSessionId = message.session_id && (
+        !session.memorySessionId ||
+        session.memorySessionId !== message.session_id
+      );
+
+      if (shouldCaptureSessionId) {
+        const previousId = session.memorySessionId;
         session.memorySessionId = message.session_id;
         // Persist to database for cross-restart recovery
         this.dbManager.getSessionStore().updateMemorySessionId(
@@ -127,7 +137,7 @@ export class SDKAgent {
         // Verify the update by reading back from DB
         const verification = this.dbManager.getSessionStore().getSessionById(session.sessionDbId);
         const dbVerified = verification?.memory_session_id === message.session_id;
-        logger.info('SESSION', `MEMORY_ID_CAPTURED | sessionDbId=${session.sessionDbId} | memorySessionId=${message.session_id} | dbVerified=${dbVerified}`, {
+        logger.info('SESSION', `MEMORY_ID_CAPTURED | sessionDbId=${session.sessionDbId} | memorySessionId=${message.session_id} | previousId=${previousId || 'none'} | dbVerified=${dbVerified}`, {
           sessionId: session.sessionDbId,
           memorySessionId: message.session_id
         });
@@ -137,7 +147,7 @@ export class SDKAgent {
           });
         }
         // Debug-level alignment log for detailed tracing
-        logger.debug('SDK', `[ALIGNMENT] Captured | contentSessionId=${session.contentSessionId} → memorySessionId=${message.session_id} | Future prompts will resume with this ID`);
+        logger.debug('SDK', `[ALIGNMENT] Captured | contentSessionId=${session.contentSessionId} → memorySessionId=${message.session_id} | previousId=${previousId || 'none'} | Future prompts will resume with this ID`);
       }
 
       // Handle assistant messages
