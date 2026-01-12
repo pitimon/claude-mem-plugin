@@ -647,7 +647,7 @@ export class SessionStore {
   }
 
   /**
-   * Create raw_tool_events table for Option C: Raw First, Summarize Later (migration 21)
+   * Create raw_tool_events table for Pending Message Fix: Raw First, Summarize Later (migration 21)
    *
    * This table stores raw tool data immediately without waiting for LLM summarization.
    * Benefits:
@@ -694,7 +694,7 @@ export class SessionStore {
 
   /**
    * Migrate existing pending_messages to raw_tool_events (migration 22)
-   * One-time migration when Option C is enabled
+   * One-time migration when Pending Message Fix is enabled
    */
   private migratePendingMessagesToRawEvents(): void {
     const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(22) as SchemaVersion | undefined;

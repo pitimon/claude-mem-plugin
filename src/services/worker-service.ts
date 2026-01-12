@@ -70,7 +70,7 @@ import { RawToolEventStore } from './sqlite/RawToolEventStore.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../shared/paths.js';
 
-// Feature flag for Option C: Raw First, Summarize Later
+// Feature flag for Pending Message Fix: Raw First, Summarize Later
 // Read from settings.json for reliability (env var was not passed to daemon correctly)
 const workerSettings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH) as any;
 const USE_RAW_EVENTS = workerSettings.CLAUDE_MEM_USE_RAW_EVENTS === 'true' || workerSettings.CLAUDE_MEM_USE_RAW_EVENTS === true;
@@ -134,7 +134,7 @@ export class WorkerService {
   // Route handlers
   private searchRoutes: SearchRoutes | null = null;
 
-  // Option C: Raw Event Summarizer (background worker)
+  // Pending Message Fix: Raw Event Summarizer (background worker)
   private rawEventSummarizer: RawEventSummarizer | null = null;
 
   // Initialization tracking
@@ -329,7 +329,7 @@ export class WorkerService {
       // Start stale session cleanup worker (every 15 minutes)
       this.startStaleSessionCleanupWorker();
 
-      // Option C: Start raw event summarizer if enabled
+      // Pending Message Fix: Start raw event summarizer if enabled
       if (USE_RAW_EVENTS) {
         this.startRawEventSummarizer();
       }
@@ -474,7 +474,7 @@ export class WorkerService {
 
   /**
    * Start the raw event summarizer background worker
-   * Part of Option C: Raw First, Summarize Later
+   * Part of Pending Message Fix: Raw First, Summarize Later
    */
   private startRawEventSummarizer(): void {
     const sessionStore = this.dbManager.getSessionStore();
@@ -491,7 +491,7 @@ export class WorkerService {
     );
 
     this.rawEventSummarizer.start();
-    logger.info('SYSTEM', 'Raw event summarizer started (Option C enabled)');
+    logger.info('SYSTEM', 'Raw event summarizer started (Pending Message Fix enabled)');
   }
 
   /**

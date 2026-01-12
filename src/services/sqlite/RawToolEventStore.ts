@@ -37,7 +37,7 @@ export interface RawToolEventInput {
 /**
  * RawToolEventStore - Persistent storage for raw tool events
  *
- * Part of Option C: Raw First, Summarize Later
+ * Part of Pending Message Fix: Raw First, Summarize Later
  *
  * This store captures tool data immediately without LLM dependency.
  * Background worker summarizes events later with retry logic.

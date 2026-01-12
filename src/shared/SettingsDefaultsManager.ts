@@ -50,7 +50,7 @@ export interface SettingsDefaults {
   // Feature Toggles
   CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: string;
   CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: string;
-  // Option C: Raw First, Summarize Later
+  // Pending Message Fix: Raw First, Summarize Later
   CLAUDE_MEM_USE_RAW_EVENTS: string;
 }
 
@@ -96,7 +96,7 @@ export class SettingsDefaultsManager {
     // Feature Toggles
     CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: 'true',
     CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: 'false',
-    // Option C: Raw First, Summarize Later (disabled by default)
+    // Pending Message Fix: Raw First, Summarize Later (disabled by default)
     CLAUDE_MEM_USE_RAW_EVENTS: 'false',
   };
 

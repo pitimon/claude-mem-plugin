@@ -1,5 +1,5 @@
 /**
- * RawEventSummarizer: Background worker for Option C
+ * RawEventSummarizer: Background worker for Pending Message Fix
  *
  * Part of "Raw First, Summarize Later" architecture:
  * - Polls raw_tool_events table on interval

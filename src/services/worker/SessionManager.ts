@@ -18,7 +18,7 @@ import { SessionQueueProcessor } from '../queue/SessionQueueProcessor.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 
-// Feature flag for Option C: Raw First, Summarize Later
+// Feature flag for Pending Message Fix: Raw First, Summarize Later
 // Cached at startup - requires restart to change
 const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH) as any;
 const USE_RAW_EVENTS = settings.CLAUDE_MEM_USE_RAW_EVENTS === 'true' || settings.CLAUDE_MEM_USE_RAW_EVENTS === true;
@@ -48,7 +48,7 @@ export class SessionManager {
 
   /**
    * Get or create RawToolEventStore (lazy initialization)
-   * Used for Option C: Raw First, Summarize Later
+   * Used for Pending Message Fix: Raw First, Summarize Later
    */
   getRawStore(): RawToolEventStore {
     if (!this.rawStore) {
@@ -201,7 +201,7 @@ export class SessionManager {
    * CRITICAL: Persists to database FIRST before adding to in-memory queue.
    * This ensures observations survive worker crashes.
    *
-   * Option C (USE_RAW_EVENTS=true): Stores raw data immediately without LLM dependency.
+   * Pending Message Fix (USE_RAW_EVENTS=true): Stores raw data immediately without LLM dependency.
    * Background worker summarizes later.
    */
   queueObservation(sessionDbId: number, data: ObservationData): void {
@@ -211,7 +211,7 @@ export class SessionManager {
       session = this.initializeSession(sessionDbId);
     }
 
-    // Option C: Raw First, Summarize Later
+    // Pending Message Fix: Raw First, Summarize Later
     if (USE_RAW_EVENTS) {
       try {
         const eventId = this.getRawStore().insertRaw(sessionDbId, session.contentSessionId, {
