@@ -2,6 +2,43 @@
 
 All notable changes to claude-mem.
 
+## [v9.1.1] - 2026-01-13
+
+### Bug Fixes
+
+- **Option C: Track discovery_tokens from LLM summarization**
+  - Added `LLMResponse` interface to return content and token count
+  - Updated `callOpenRouter()` to extract `usage.total_tokens` from response
+  - Updated `callGemini()` to extract `usageMetadata` token counts
+  - Pass `discoveryTokens` to `storeObservations()` call
+  - Before: Option C observations had `discovery_tokens = 0`
+  - After: Properly tracks ~1,200-1,300 tokens per summarization batch
+  - Enables accurate token savings calculations for ROI tracking
+
+### Full Changelog
+
+https://github.com/pitimon/claude-mem-plugin/compare/v9.1.0...v9.1.1
+
+## [v9.1.0] - 2026-01-11
+
+### Features
+
+- **Option C: Raw First, Summarize Later**
+  - New `RawEventSummarizer` background worker for async LLM summarization
+  - Raw tool events stored immediately, summarized in batches every 10 seconds
+  - Supports both OpenRouter and Gemini providers
+  - Automatic cleanup of completed events after 1 hour retention
+  - Release stuck events on worker restart
+
+- **Stale Session Cleanup Worker**
+  - Background worker to clean up stale sessions older than 24 hours
+  - Runs every 15 minutes
+  - Prevents database bloat from abandoned sessions
+
+### Full Changelog
+
+https://github.com/pitimon/claude-mem-plugin/compare/v9.0.4...v9.1.0
+
 ## [v9.0.4] - 2026-01-10
 
 ## What's New
