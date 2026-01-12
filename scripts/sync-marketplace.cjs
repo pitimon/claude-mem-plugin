@@ -45,12 +45,12 @@ if (branch && branch !== 'main' && !isForce) {
   process.exit(1);
 }
 
-// Get version from plugin.json
+// Get version from package.json (source of truth)
 function getPluginVersion() {
   try {
-    const pluginJsonPath = path.join(__dirname, '..', 'plugin', '.claude-plugin', 'plugin.json');
-    const pluginJson = JSON.parse(readFileSync(pluginJsonPath, 'utf-8'));
-    return pluginJson.version;
+    const packageJsonPath = path.join(__dirname, '..', 'package.json');
+    const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
+    return packageJson.version;
   } catch (error) {
     console.error('\x1b[31m%s\x1b[0m', 'Failed to read plugin version:', error.message);
     process.exit(1);
@@ -80,6 +80,22 @@ try {
     `rsync -av --delete --exclude=.git plugin/ "${CACHE_VERSION_PATH}/"`,
     { stdio: 'inherit' }
   );
+
+  // Update 'current' symlink to point to new version (using fs module for safety)
+  const fs = require('fs');
+  const CURRENT_SYMLINK = path.join(CACHE_BASE_PATH, 'current');
+  console.log(`Updating 'current' symlink to version ${version}...`);
+  try {
+    // Remove old symlink if exists
+    if (existsSync(CURRENT_SYMLINK)) {
+      fs.unlinkSync(CURRENT_SYMLINK);
+    }
+    // Create new symlink (relative path for portability)
+    fs.symlinkSync(version, CURRENT_SYMLINK);
+    console.log('\x1b[32m%s\x1b[0m', `✓ Symlink updated: current -> ${version}`);
+  } catch (symlinkError) {
+    console.error('\x1b[31m%s\x1b[0m', 'Failed to update symlink:', symlinkError.message);
+  }
 
   console.log('\x1b[32m%s\x1b[0m', 'Sync complete!');
 
