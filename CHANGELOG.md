@@ -2,6 +2,47 @@
 
 All notable changes to claude-mem.
 
+## [v9.1.3] - 2026-01-13
+
+### Bug Fixes
+
+- **Fix Dev Workflow: Auto-update Cache Symlink on Version Change**
+  - **Problem:** PostToolUse hook stopped creating observations after version bump
+  - **Root Cause:** Worker ran from cache path (`~/.claude/plugins/cache/.../9.0.4`) while new code was in marketplace (`9.1.2`)
+  - **Impact:** CRITICAL - All development information lost during the gap
+  - **Solution:** `sync-marketplace.cjs` now auto-updates `current` symlink after rsync
+  - Uses `fs.symlinkSync()` for safe symlink creation
+  - Reads version from `package.json` (source of truth)
+
+### Dev Workflow (After Fix)
+
+```bash
+# Just run this after any code change:
+npm run dev
+
+# Automatically does:
+# 1. npm run build
+# 2. rsync → cache/{version}/
+# 3. symlink: current → {version}  ← NEW!
+# 4. worker:restart
+```
+
+### Detection & Recovery
+
+```bash
+# Detection: Check if observations stopped
+sqlite3 ~/.claude-mem/claude-mem.db "SELECT status, COUNT(*) FROM raw_tool_events GROUP BY status"
+
+# Recovery: Reset stuck events and restart
+pkill -f worker-service
+sqlite3 ~/.claude-mem/claude-mem.db "UPDATE raw_tool_events SET status='pending' WHERE status IN ('summarizing','failed')"
+npm run dev
+```
+
+### Full Changelog
+
+https://github.com/pitimon/claude-mem-plugin/compare/v9.1.2...v9.1.3
+
 ## [v9.1.2] - 2026-01-13
 
 ### Refactor
