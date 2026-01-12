@@ -2,6 +2,20 @@
 
 All notable changes to claude-mem.
 
+## [v9.1.2] - 2026-01-13
+
+### Refactor
+
+- **Rename "Option C" to "Pending Message Fix"**
+  - More descriptive name that reflects the problem being solved
+  - Problem: Streaming agent LLM provider caused pending messages to get stuck
+  - Solution: Store raw events first, then summarize asynchronously
+  - Updated 7 source files with clearer terminology
+
+### Full Changelog
+
+https://github.com/pitimon/claude-mem-plugin/compare/v9.1.1...v9.1.2
+
 ## [v9.1.1] - 2026-01-13
 
 ### Bug Fixes
