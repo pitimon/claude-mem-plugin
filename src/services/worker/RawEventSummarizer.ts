@@ -33,6 +33,11 @@ interface SummarizerStats {
   lastCleanupAt: number | null;
 }
 
+interface LLMResponse {
+  content: string;
+  totalTokens: number;
+}
+
 export class RawEventSummarizer {
   private dbManager: DatabaseManager;
   private rawStore: RawToolEventStore;
@@ -165,8 +170,8 @@ export class RawEventSummarizer {
       // Build prompt from raw events
       const prompt = this.buildBatchPrompt(events, sessionRecord.project);
 
-      // Call LLM
-      const response = await this.callLLM(prompt);
+      // Call LLM and get token usage
+      const { content: response, totalTokens: discoveryTokens } = await this.callLLM(prompt);
 
       // Parse observations from XML response
       const observations = parseObservations(response, events[0].content_session_id);
@@ -181,13 +186,14 @@ export class RawEventSummarizer {
         return;
       }
 
-      // Store observations
+      // Store observations with discovery tokens
       const result = sessionStore.storeObservations(
         sessionRecord.memory_session_id,
         sessionRecord.project,
         observations,
         null, // no summary
-        events[0].prompt_number || 1
+        events[0].prompt_number || 1,
+        discoveryTokens // Pass LLM token usage
       );
 
       // Mark events as completed
@@ -288,8 +294,9 @@ ${observationXml}`;
 
   /**
    * Call LLM (OpenRouter or Gemini based on settings)
+   * Returns content and total token usage for discovery_tokens tracking
    */
-  private async callLLM(prompt: string): Promise<string> {
+  private async callLLM(prompt: string): Promise<LLMResponse> {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     const provider = settings.CLAUDE_MEM_PROVIDER || 'openrouter';
 
@@ -305,8 +312,9 @@ ${observationXml}`;
 
   /**
    * Call OpenRouter API
+   * Returns content and token usage from response
    */
-  private async callOpenRouter(prompt: string, settings: any): Promise<string> {
+  private async callOpenRouter(prompt: string, settings: any): Promise<LLMResponse> {
     const apiKey = settings.CLAUDE_MEM_OPENROUTER_API_KEY;
     if (!apiKey) {
       throw new Error('CLAUDE_MEM_OPENROUTER_API_KEY not configured');
@@ -341,7 +349,11 @@ ${observationXml}`;
       }
 
       const data = await response.json() as any;
-      return data.choices?.[0]?.message?.content || '';
+      const content = data.choices?.[0]?.message?.content || '';
+      // OpenRouter returns usage.total_tokens (prompt + completion)
+      const totalTokens = data.usage?.total_tokens || 0;
+
+      return { content, totalTokens };
 
     } finally {
       clearTimeout(timeout);
@@ -350,8 +362,9 @@ ${observationXml}`;
 
   /**
    * Call Google AI (Gemini) API
+   * Returns content and token usage from response
    */
-  private async callGemini(prompt: string, settings: any): Promise<string> {
+  private async callGemini(prompt: string, settings: any): Promise<LLMResponse> {
     const apiKey = settings.CLAUDE_MEM_GEMINI_API_KEY;
     if (!apiKey) {
       throw new Error('CLAUDE_MEM_GEMINI_API_KEY not configured');
@@ -383,7 +396,12 @@ ${observationXml}`;
       }
 
       const data = await response.json() as any;
-      return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      const content = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      // Gemini returns usageMetadata with promptTokenCount + candidatesTokenCount
+      const usageMetadata = data.usageMetadata || {};
+      const totalTokens = (usageMetadata.promptTokenCount || 0) + (usageMetadata.candidatesTokenCount || 0);
+
+      return { content, totalTokens };
 
     } finally {
       clearTimeout(timeout);
