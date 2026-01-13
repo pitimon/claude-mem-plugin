@@ -319,7 +319,10 @@ export class SessionRoutes extends BaseRouteHandler {
     });
 
     // CRITICAL: Ensure SDK agent is running to consume the queue
-    this.ensureGeneratorRunning(sessionDbId, 'observation');
+    // Skip for Option C (Raw Events) - RawEventSummarizer handles observations
+    if (!this.sessionManager.isUsingRawEvents()) {
+      this.ensureGeneratorRunning(sessionDbId, 'observation');
+    }
 
     // Broadcast observation queued event
     this.eventBroadcaster.broadcastObservationQueued(sessionDbId);
@@ -478,7 +481,10 @@ export class SessionRoutes extends BaseRouteHandler {
     });
 
     // Ensure SDK agent is running
-    this.ensureGeneratorRunning(sessionDbId, 'observation');
+    // Skip for Option C (Raw Events) - RawEventSummarizer handles observations
+    if (!this.sessionManager.isUsingRawEvents()) {
+      this.ensureGeneratorRunning(sessionDbId, 'observation');
+    }
 
     // Broadcast observation queued event
     this.eventBroadcaster.broadcastObservationQueued(sessionDbId);

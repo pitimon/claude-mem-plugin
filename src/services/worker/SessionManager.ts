@@ -364,6 +364,14 @@ export class SessionManager {
   }
 
   /**
+   * Check if raw events mode is enabled (Option C: Raw First, Summarize Later)
+   * Used by SessionRoutes to determine if generator should be started for observations
+   */
+  isUsingRawEvents(): boolean {
+    return USE_RAW_EVENTS;
+  }
+
+  /**
    * Get total queue depth across all sessions (for activity indicator)
    */
   getTotalQueueDepth(): number {

@@ -46,6 +46,8 @@ export class RawEventSummarizer {
   private stats: SummarizerStats = { processed: 0, failed: 0, lastRunAt: null, lastCleanupAt: null };
   private batchCounter = 0;
   private readonly cleanupEveryNBatches = 100; // Cleanup every ~17 minutes (100 * 10s)
+  private readonly staleCheckEveryNBatches = 30; // Check stuck events every ~5 minutes (30 * 10s)
+  private readonly staleThresholdMs = 60000; // Consider stuck after 60 seconds
   private readonly completedRetentionMs = 60 * 60 * 1000; // 1 hour retention for completed events
 
   // Configuration
@@ -114,6 +116,11 @@ export class RawEventSummarizer {
         this.cleanupCompletedEvents();
       }
 
+      // Periodic release of stuck events (prevents permanent stalls)
+      if (this.batchCounter % this.staleCheckEveryNBatches === 0) {
+        this.releaseStuckEvents();
+      }
+
       const batch = this.rawStore.claimBatchForSummarization(this.batchSize);
       if (batch.length === 0) return;
 
@@ -131,6 +138,21 @@ export class RawEventSummarizer {
       logger.error('RAW_SUMMARIZER', 'Batch processing failed', {}, error as Error);
     } finally {
       this.isProcessing = false;
+    }
+  }
+
+  /**
+   * Release stuck events that have been in 'summarizing' state too long
+   * This prevents permanent stalls from LLM timeouts or crashes
+   */
+  private releaseStuckEvents(): void {
+    try {
+      const released = this.rawStore.releaseStuckEvents(this.staleThresholdMs);
+      if (released > 0) {
+        logger.warn('RAW_SUMMARIZER', `Released ${released} stuck events (threshold=${this.staleThresholdMs}ms)`);
+      }
+    } catch (error) {
+      logger.error('RAW_SUMMARIZER', 'Failed to release stuck events', {}, error as Error);
     }
   }
 
