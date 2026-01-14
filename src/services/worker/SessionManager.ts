@@ -14,9 +14,11 @@ import { logger } from '../../utils/logger.js';
 import type { ActiveSession, PendingMessage, PendingMessageWithId, ObservationData } from '../worker-types.js';
 import { PendingMessageStore } from '../sqlite/PendingMessageStore.js';
 import { RawToolEventStore } from '../sqlite/RawToolEventStore.js';
+import { RawSummaryRequestStore } from '../sqlite/RawSummaryRequestStore.js';
 import { SessionQueueProcessor } from '../queue/SessionQueueProcessor.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { ProcessTracker } from './ProcessTracker.js';
 
 // Feature flag for Pending Message Fix: Raw First, Summarize Later
 // Cached at startup - requires restart to change
@@ -30,6 +32,7 @@ export class SessionManager {
   private onSessionDeletedCallback?: () => void;
   private pendingStore: PendingMessageStore | null = null;
   private rawStore: RawToolEventStore | null = null;
+  private rawSummaryStore: RawSummaryRequestStore | null = null;
 
   constructor(dbManager: DatabaseManager) {
     this.dbManager = dbManager;
@@ -56,6 +59,18 @@ export class SessionManager {
       this.rawStore = new RawToolEventStore(sessionStore.db, 3);
     }
     return this.rawStore;
+  }
+
+  /**
+   * Get or create RawSummaryRequestStore (lazy initialization)
+   * Used for Option C: Session Summary without SDK process spawn
+   */
+  getRawSummaryStore(): RawSummaryRequestStore {
+    if (!this.rawSummaryStore) {
+      const sessionStore = this.dbManager.getSessionStore();
+      this.rawSummaryStore = new RawSummaryRequestStore(sessionStore.db, 3);
+    }
+    return this.rawSummaryStore;
   }
 
   /**
@@ -273,6 +288,9 @@ export class SessionManager {
    *
    * CRITICAL: Persists to database FIRST before adding to in-memory queue.
    * This ensures summarize requests survive worker crashes.
+   *
+   * Option C (USE_RAW_EVENTS=true): Stores in raw_summary_requests for async processing.
+   * No SDK process spawn - background worker handles summarization.
    */
   queueSummarize(sessionDbId: number, lastAssistantMessage?: string): void {
     // Auto-initialize from database if needed (handles worker restarts)
@@ -281,7 +299,35 @@ export class SessionManager {
       session = this.initializeSession(sessionDbId);
     }
 
-    // CRITICAL: Persist to database FIRST
+    // Option C: Raw First, Summarize Later (no SDK process spawn)
+    if (USE_RAW_EVENTS) {
+      try {
+        // Check for duplicate requests
+        if (this.getRawSummaryStore().hasPendingForSession(sessionDbId)) {
+          logger.debug('SESSION', 'Skipping duplicate summary request', { sessionId: sessionDbId });
+          return;
+        }
+
+        const requestId = this.getRawSummaryStore().insertRaw(sessionDbId, session.contentSessionId, {
+          memory_session_id: session.memorySessionId,
+          project: session.project,
+          user_prompt: session.userPrompt,
+          last_assistant_message: lastAssistantMessage
+        });
+        const pending = this.getRawSummaryStore().getPendingCount();
+        logger.info('RAW_SUMMARY', `CAPTURED | sessionDbId=${sessionDbId} | requestId=${requestId} | pending=${pending}`, {
+          sessionId: sessionDbId
+        });
+        return; // Don't notify generator - background worker will handle summarization
+      } catch (error) {
+        logger.error('SESSION', 'Failed to persist raw summary request to DB', {
+          sessionId: sessionDbId
+        }, error);
+        throw error;
+      }
+    }
+
+    // Legacy flow: Persist to pending_messages for SDKAgent processing
     const message: PendingMessage = {
       type: 'summarize',
       last_assistant_message: lastAssistantMessage
@@ -315,24 +361,40 @@ export class SessionManager {
 
     const sessionDuration = Date.now() - session.startTime;
 
-    // Abort the SDK agent
+    // Step 1: Abort the SDK agent (signals query loop to stop)
     session.abortController.abort();
 
-    // Wait for generator to finish
-    if (session.generatorPromise) {
-      await session.generatorPromise.catch(error => {
-        logger.debug('SYSTEM', 'Generator already failed, cleaning up', { sessionId: session.sessionDbId });
-      });
+    // Step 2: Terminate the spawned Claude CLI process
+    // This prevents orphan processes that consume CPU/memory
+    const processTracker = ProcessTracker.getInstance();
+    const hasTrackedProcess = processTracker.hasProcess(sessionDbId);
+    if (hasTrackedProcess) {
+      const terminated = await processTracker.terminateProcess(sessionDbId, 5000);
+      if (!terminated) {
+        logger.warn('SESSION', 'Failed to terminate process cleanly', { sessionId: sessionDbId });
+      }
     }
 
-    // Cleanup
+    // Step 3: Wait for generator to finish (with timeout to prevent hanging)
+    if (session.generatorPromise) {
+      const GENERATOR_TIMEOUT_MS = 10000;
+      await Promise.race([
+        session.generatorPromise.catch(error => {
+          logger.debug('SYSTEM', 'Generator already failed, cleaning up', { sessionId: session.sessionDbId });
+        }),
+        new Promise(resolve => setTimeout(resolve, GENERATOR_TIMEOUT_MS))
+      ]);
+    }
+
+    // Step 4: Cleanup in-memory state
     this.sessions.delete(sessionDbId);
     this.sessionQueues.delete(sessionDbId);
 
-    logger.info('SESSION', 'Session deleted', {
+    logger.info('SESSION', 'Session deleted with process cleanup', {
       sessionId: sessionDbId,
       duration: `${(sessionDuration / 1000).toFixed(1)}s`,
-      project: session.project
+      project: session.project,
+      hadTrackedProcess: hasTrackedProcess
     });
 
     // Trigger callback to broadcast status update (spinner may need to stop)

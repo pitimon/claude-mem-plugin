@@ -20,6 +20,7 @@ import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import type { ActiveSession, SDKUserMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import { processAgentResponse, type WorkerRef } from './agents/index.js';
+import { ProcessTracker } from './ProcessTracker.js';
 
 // Import Agent SDK (assumes it's installed)
 // @ts-ignore - Agent SDK types may not be available
@@ -97,6 +98,11 @@ export class SDKAgent {
       }
     }
 
+    // Create tracked spawn function for process lifecycle management
+    // This intercepts the SDK's process spawn to track PIDs for proper cleanup
+    const processTracker = ProcessTracker.getInstance();
+    const trackedSpawn = processTracker.createTrackedSpawnFunction(session.sessionDbId);
+
     // Run Agent SDK query loop
     // Only resume if we have a captured memory session ID
     const queryResult = query({
@@ -109,7 +115,9 @@ export class SDKAgent {
         ...(hasRealMemorySessionId && session.lastPromptNumber > 1 && { resume: session.memorySessionId }),
         disallowedTools,
         abortController: session.abortController,
-        pathToClaudeCodeExecutable: claudePath
+        pathToClaudeCodeExecutable: claudePath,
+        // Track spawned process for proper cleanup on session end
+        spawnClaudeCodeProcess: trackedSpawn
       }
     });
 

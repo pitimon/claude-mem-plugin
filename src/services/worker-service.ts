@@ -66,9 +66,13 @@ import { FormattingService } from './worker/FormattingService.js';
 import { TimelineService } from './worker/TimelineService.js';
 import { SessionEventBroadcaster } from './worker/events/SessionEventBroadcaster.js';
 import { RawEventSummarizer } from './worker/RawEventSummarizer.js';
+import { RawSummarySummarizer } from './worker/RawSummarySummarizer.js';
 import { RawToolEventStore } from './sqlite/RawToolEventStore.js';
+import { RawSummaryRequestStore } from './sqlite/RawSummaryRequestStore.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../shared/paths.js';
+import { OrphanProcessScanner } from './worker/OrphanProcessScanner.js';
+import { ProcessTracker } from './worker/ProcessTracker.js';
 
 // Feature flag for Pending Message Fix: Raw First, Summarize Later
 // Read from settings.json for reliability (env var was not passed to daemon correctly)
@@ -136,6 +140,12 @@ export class WorkerService {
 
   // Pending Message Fix: Raw Event Summarizer (background worker)
   private rawEventSummarizer: RawEventSummarizer | null = null;
+
+  // Option C: Session Summary Summarizer (background worker, no SDK process spawn)
+  private rawSummarySummarizer: RawSummarySummarizer | null = null;
+
+  // Orphan Process Scanner: Cleanup leaked Claude CLI processes
+  private orphanScanner: OrphanProcessScanner | null = null;
 
   // Initialization tracking
   private initializationComplete: Promise<void>;
@@ -332,7 +342,11 @@ export class WorkerService {
       // Pending Message Fix: Start raw event summarizer if enabled
       if (USE_RAW_EVENTS) {
         this.startRawEventSummarizer();
+        this.startRawSummarySummarizer();
       }
+
+      // Start orphan process scanner (every 5 minutes, cleanup processes older than 30 minutes)
+      this.startOrphanProcessScanner();
     } catch (error) {
       logger.error('SYSTEM', 'Background initialization failed', {}, error as Error);
       throw error;
@@ -444,7 +458,19 @@ export class WorkerService {
 
         const sessionIds = staleSessions.map(s => s.id);
 
-        // Mark pending messages from stale sessions as failed
+        // Step 1: Terminate any tracked processes for stale sessions
+        const processTracker = ProcessTracker.getInstance();
+        let terminatedCount = 0;
+        for (const staleSession of staleSessions) {
+          if (processTracker.hasProcess(staleSession.id)) {
+            const terminated = await processTracker.terminateProcess(staleSession.id, 5000);
+            if (terminated) terminatedCount++;
+          }
+          // Also clean up from SessionManager if still active
+          await this.sessionManager.deleteSession(staleSession.id);
+        }
+
+        // Step 2: Mark pending messages from stale sessions as failed
         const failedResult = db.run(`
           UPDATE pending_messages
           SET status = 'failed', failed_at_epoch = ?
@@ -452,7 +478,7 @@ export class WorkerService {
             AND status = 'pending'
         `, [now]);
 
-        // Mark stale sessions as completed
+        // Step 3: Mark stale sessions as completed
         const completedResult = db.run(`
           UPDATE sdk_sessions
           SET status = 'completed', completed_at_epoch = ?
@@ -461,6 +487,7 @@ export class WorkerService {
 
         logger.info('SYSTEM', 'Stale session cleanup completed', {
           staleSessions: staleSessions.length,
+          terminatedProcesses: terminatedCount,
           failedMessages: failedResult.changes,
           completedSessions: completedResult.changes
         });
@@ -469,7 +496,22 @@ export class WorkerService {
       }
     }, CLEANUP_INTERVAL_MS);
 
-    logger.info('SYSTEM', 'Stale session cleanup worker started (15m interval)');
+    logger.info('SYSTEM', 'Stale session cleanup worker started (15m interval, with process termination)');
+  }
+
+  /**
+   * Start the orphan process scanner background worker
+   * Cleans up leaked Claude CLI processes that escape normal cleanup
+   */
+  private startOrphanProcessScanner(): void {
+    this.orphanScanner = new OrphanProcessScanner({
+      maxAgeMs: 30 * 60 * 1000 // 30 minutes
+    });
+
+    // Scan every 5 minutes
+    this.orphanScanner.start(5 * 60 * 1000);
+
+    logger.info('SYSTEM', 'Orphan process scanner started (5m interval, 30m threshold)');
   }
 
   /**
@@ -492,6 +534,28 @@ export class WorkerService {
 
     this.rawEventSummarizer.start();
     logger.info('SYSTEM', 'Raw event summarizer started (Pending Message Fix enabled)');
+  }
+
+  /**
+   * Start the raw summary request summarizer (Option C for Session Summaries)
+   * Processes pending session summary requests without spawning SDK processes
+   */
+  private startRawSummarySummarizer(): void {
+    const sessionStore = this.dbManager.getSessionStore();
+    const rawSummaryStore = new RawSummaryRequestStore(sessionStore.db, 3);
+
+    this.rawSummarySummarizer = new RawSummarySummarizer(
+      this.dbManager,
+      rawSummaryStore,
+      {
+        intervalMs: 10000,   // Every 10 seconds
+        batchSize: 5,        // 5 summary requests per batch
+        timeoutMs: 60000     // 60 second timeout per LLM call
+      }
+    );
+
+    this.rawSummarySummarizer.start();
+    logger.info('SYSTEM', 'Raw summary summarizer started (Option C for Session Summaries)');
   }
 
   /**
