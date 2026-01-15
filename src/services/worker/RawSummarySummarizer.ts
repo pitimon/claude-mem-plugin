@@ -212,8 +212,27 @@ export class RawSummarySummarizer {
       // Ignore errors fetching observations
     }
 
+    // Enhanced prompt with explicit detail requirements for better summaries
+    const detailGuidance = `
+IMPORTANT: Write detailed, informative summaries. Each field should be substantive:
+- request: 80-120 characters - Capture the full intent, not just keywords
+- investigated: 150-250 characters - What was examined, searched, or analyzed
+- learned: 300-500 characters - Key insights, discoveries, how things work (MOST IMPORTANT)
+- completed: 250-400 characters - Specific actions taken, changes made, problems solved
+- next_steps: 150-250 characters - Concrete next actions or recommendations
+- notes: Optional additional context
+
+BAD example (too short):
+<learned>The server is working.</learned>
+
+GOOD example (detailed):
+<learned>Discovered that the session summary generation was using gpt-4o-mini via OpenRouter fallback when provider was set to 'claude', resulting in summaries that were 50-70% shorter than expected. The root cause was missing provider handling in the callLLM method. The fix requires either switching models or enhancing prompts with explicit length requirements.</learned>
+`;
+
     return `${mode.prompts.header_summary_checkpoint}
 ${mode.prompts.summary_instruction}
+
+${detailGuidance}
 
 User's original request: ${request.user_prompt}
 
@@ -222,12 +241,12 @@ ${lastAssistantMessage}${contextInfo}
 
 ${mode.prompts.summary_format_instruction}
 <summary>
-  <request>${mode.prompts.xml_summary_request_placeholder}</request>
-  <investigated>${mode.prompts.xml_summary_investigated_placeholder}</investigated>
-  <learned>${mode.prompts.xml_summary_learned_placeholder}</learned>
-  <completed>${mode.prompts.xml_summary_completed_placeholder}</completed>
-  <next_steps>${mode.prompts.xml_summary_next_steps_placeholder}</next_steps>
-  <notes>${mode.prompts.xml_summary_notes_placeholder}</notes>
+  <request>[80-120 chars: Full description of what the user wanted]</request>
+  <investigated>[150-250 chars: What was examined or analyzed]</investigated>
+  <learned>[300-500 chars: Key insights and discoveries - be specific and detailed]</learned>
+  <completed>[250-400 chars: Specific actions taken and results achieved]</completed>
+  <next_steps>[150-250 chars: Concrete next actions or recommendations]</next_steps>
+  <notes>[Optional: Additional context or observations]</notes>
 </summary>
 
 ${mode.prompts.summary_footer}`;
