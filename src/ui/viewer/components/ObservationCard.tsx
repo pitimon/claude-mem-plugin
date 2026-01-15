@@ -31,8 +31,8 @@ function stripProjectRoot(filePath: string): string {
 }
 
 export function ObservationCard({ observation }: ObservationCardProps) {
-  const [showFacts, setShowFacts] = useState(false);
-  const [showNarrative, setShowNarrative] = useState(false);
+  const [showFacts, setShowFacts] = useState(true);
+  const [showNarrative, setShowNarrative] = useState(true);
   const date = formatDate(observation.created_at_epoch);
 
   // Parse JSON fields
